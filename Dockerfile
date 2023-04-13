@@ -1,92 +1,57 @@
-# vim:set ft=dockerfile:
-FROM debian:10
+FROM debian:bullseye
+MAINTAINER Andrey Volk <andrey@signalwire.com>
 
-# Source Dockerfile:
-# https://github.com/docker-library/postgres/blob/master/9.4/Dockerfile
-
-RUN apt-get update && apt-get install -y gnupg2 gnupg gnupg1
-
-# explicitly set user/group IDs
-RUN groupadd -r freeswitch --gid=999 && useradd -r -g freeswitch --uid=999 freeswitch
-
-# grab gosu for easy step-down from root
-#RUN gpg --keyserver ha.pool.sks-keyservers.net --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4  7D2BAF1CF37B13E2069D6956105BD0E739499BDB
-
-#RUN gpg --keyserver keyserver.ubuntu.com --recv-key 409B6B1796C275462A1703113804BB82D39DC0E3
-RUN gpg --keyserver keyserver.ubuntu.com --recv-key 409B6B1796C275462A1703113804BB82D39DC0E3 7D2BAF1CF37B13E2069D6956105BD0E739499BDB
+RUN sed -i 's/http:\/\/deb.debian.org/http:\/\/mirrors.aliyun.com/g' /etc/apt/sources.list
 
 
-#RUN gpg --keyserver hkp://pgp.mit.edu --recv-keys 409B6B1796C275462A1703113804BB82D39DC0E3 7D2BAF1CF37B13E2069D6956105BD0E739499BDB
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -yq install git
 
+RUN git clone https://github.com/signalwire/freeswitch /usr/src/freeswitch
+RUN git clone https://github.com/signalwire/libks /usr/src/libs/libks
+RUN git clone https://github.com/freeswitch/sofia-sip /usr/src/libs/sofia-sip
+RUN git clone https://github.com/freeswitch/spandsp /usr/src/libs/spandsp
+RUN git clone https://github.com/signalwire/signalwire-c /usr/src/libs/signalwire-c
 
-COPY gosu-amd64 /usr/local/bin/gosu
-COPY gosu-amd64.asc /usr/local/bin/gosu.asc 
+RUN DEBIAN_FRONTEND=noninteractive apt-get -yq install \
+# build
+    build-essential cmake automake autoconf 'libtool-bin|libtool' pkg-config \
+# general
+    libssl-dev zlib1g-dev libdb-dev unixodbc-dev libncurses5-dev libexpat1-dev libgdbm-dev bison erlang-dev libtpl-dev libtiff5-dev uuid-dev \
+# core
+    libpcre3-dev libedit-dev libsqlite3-dev libcurl4-openssl-dev nasm \
+# core codecs
+    libogg-dev libspeex-dev libspeexdsp-dev \
+# mod_enum
+    libldns-dev \
+# mod_python3
+    python3-dev \
+# mod_av
+    libavformat-dev libswscale-dev libavresample-dev \
+# mod_lua
+    liblua5.2-dev \
+# mod_opus
+    libopus-dev \
+# mod_pgsql
+    libpq-dev \
+# mod_sndfile
+    libsndfile1-dev libflac-dev libogg-dev libvorbis-dev \
+# mod_shout
+    libshout3-dev libmpg123-dev libmp3lame-dev
 
-RUN apt-get update && apt-get install -y  wget   && apt-get install -y lsb-base lsb-release   && rm -rf /var/lib/apt/lists/* 
+RUN cd /usr/src/libs/libks && cmake . -DCMAKE_INSTALL_PREFIX=/usr -DWITH_LIBBACKTRACE=1 && make install
+RUN cd /usr/src/libs/sofia-sip && ./bootstrap.sh && ./configure CFLAGS="-g -ggdb" --with-pic --with-glib=no --without-doxygen --disable-stun --prefix=/usr && make -j`nproc --all` && make install
+RUN cd /usr/src/libs/spandsp && ./bootstrap.sh && ./configure CFLAGS="-g -ggdb" --with-pic --prefix=/usr && make -j`nproc --all` && make install
+RUN cd /usr/src/libs/signalwire-c && PKG_CONFIG_PATH=/usr/lib/pkgconfig cmake . -DCMAKE_INSTALL_PREFIX=/usr && make install
 
-#&& gpg --verify /usr/local/bin/gosu.asc \
-    
-#&& rm /usr/local/bin/gosu.asc \
-#&& chmod +x /usr/local/bin/gosu
-    
-#&& apt-get purge -y --auto-remove ca-certificates wget
+# Enable modules
+RUN sed -i 's|#formats/mod_shout|formats/mod_shout|' /usr/src/freeswitch/build/modules.conf.in
 
-# make the "en_US.UTF-8" locale so freeswitch will be utf-8 enabled by default
-RUN apt-get update && apt-get install -y locales && rm -rf /var/lib/apt/lists/* \
-    && localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
-ENV LANG en_US.utf8
+RUN cd /usr/src/freeswitch && ./bootstrap.sh -j
+RUN cd /usr/src/freeswitch && ./configure
+RUN cd /usr/src/freeswitch && make -j`nproc` && make install
 
-# https://files.freeswitch.org/repo/deb/freeswitch-1.*/dists/jessie/main/binary-amd64/Packages
+# Cleanup the image
+RUN apt-get clean
 
-ENV FS_MAJOR debian-unstable
-
-RUN sed -i "s/jessie main/jessie main contrib non-free/" /etc/apt/sources.list
-
-# https://freeswitch.org/confluence/display/FREESWITCH/Debian+8+Jessie#Debian8Jessie-InstallingfromDebianpackages
-
-RUN apt-get update && apt-get install -y curl \
-    && curl https://files.freeswitch.org/repo/deb/debian/freeswitch_archive_g0.pub | apt-key add - \
-    && echo "deb http://files.freeswitch.org/repo/deb/debian-unstable/ `lsb_release -sc` main" > /etc/apt/sources.list.d/freeswitch.list \
-    &&   echo "deb-src http://files.freeswitch.org/repo/deb/debian-unstable/ `lsb_release -sc` main" >> /etc/apt/sources.list.d/freeswitch.list \
-    #&& echo "deb http://files.freeswitch.org/repo/deb/$FS_MAJOR/ jessie main" > /etc/apt/sources.list.d/freeswitch.list \
-    && apt-get purge -y --auto-remove curl
-
-RUN apt-get update && apt-get install -y freeswitch-all \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Clean up
-RUN apt-get autoremove
-
-COPY docker-entrypoint.sh /
-# Add anything else here
-
-## Ports
-# Open the container up to the world.
-### 8021 fs_cli, 5060 5061 5080 5081 sip and sips, 64535-65535 rtp
-EXPOSE 8021/tcp
-EXPOSE 5060/tcp 5060/udp 5080/tcp 5080/udp
-EXPOSE 5061/tcp 5061/udp 5081/tcp 5081/udp
-EXPOSE 7443/tcp
-EXPOSE 5070/udp 5070/tcp
-EXPOSE 64535-65535/udp
-EXPOSE 16384-32768/udp
-
-
-# Volumes
-## Freeswitch Configuration
-VOLUME ["/etc/freeswitch"]
-## Tmp so we can get core dumps out
-VOLUME ["/tmp"]
-
-# Limits Configuration
-COPY    build/freeswitch.limits.conf /etc/security/limits.d/
-
-# Healthcheck to make sure the service is running
-SHELL       ["/bin/bash"]
-HEALTHCHECK --interval=15s --timeout=5s \
-    CMD  fs_cli -x status | grep -q ^UP || exit 1
-
-ENTRYPOINT ["/docker-entrypoint.sh"]
-
-
-CMD ["freeswitch"]
+# Uncomment to cleanup even more
+#RUN rm -rf /usr/src/*
