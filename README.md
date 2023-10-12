@@ -19,3 +19,7 @@
 RUN sed -i 's/http://deb.debian.org/http://mirrors.aliyun.com/g' /etc/apt/sources.list
 
 做对应的替换。
+
+
+
+最新更新，最新fs和spandsp代码有冲突，修改了 dockerfile。
